@@ -8,11 +8,13 @@ Streamlit app para:
 3. Visualizar e filtrar os dados
 
 Instalação:
-    pip install -r requirements.txt
+    pip install streamlit pandas openpyxl plotly
 
 Execução:
     streamlit run app_atrasos.py
 """
+
+from __future__ import annotations
 
 import datetime
 import io
@@ -24,270 +26,7 @@ import plotly.express as px
 import streamlit as st
 
 
-# ─────────────────────────────────────────────
-# Configuração da página
-# ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="Atrasos Aeroportuários",
-    page_icon="✈️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
-# ─────────────────────────────────────────────
-# CSS customizado
-# ─────────────────────────────────────────────
-st.markdown(
-    """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;600;700&display=swap');
-
-html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
-.stApp { background-color: #0d1117; color: #e6edf3; }
-
-section[data-testid="stSidebar"] {
-    background-color: #161b22;
-    border-right: 1px solid #30363d;
-}
-
-/* Títulos */
-h1, h2, h3 {
-    font-family: 'Space Mono', monospace !important;
-}
-
-/* Métricas */
-[data-testid="metric-container"] {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 16px 20px;
-}
-
-[data-testid="metric-container"] label {
-    color: #8b949e !important;
-    font-size: 0.75rem;
-}
-
-[data-testid="metric-container"] [data-testid="stMetricValue"] {
-    color: #58a6ff !important;
-    font-family: 'Space Mono', monospace !important;
-    font-size: 1.8rem !important;
-}
-
-[data-testid="stMetricDelta"] {
-    font-size: 0.75rem;
-}
-
-/* Botões */
-.stButton > button {
-    background: #238636;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    font-family: 'DM Sans', sans-serif;
-    font-weight: 600;
-    padding: 0.5rem 1.2rem;
-    transition: background 0.2s;
-}
-
-.stButton > button:hover {
-    background: #2ea043;
-}
-
-/* Upload */
-[data-testid="stFileUploader"] {
-    background: #161b22;
-    border: 1px dashed #388bfd;
-    border-radius: 8px;
-    padding: 1rem;
-}
-
-/* Dataframe */
-[data-testid="stDataFrame"] {
-    border: 1px solid #30363d;
-    border-radius: 8px;
-}
-
-/* Abas */
-.stTabs [data-baseweb="tab-list"] {
-    background: #161b22;
-    border-radius: 8px;
-    gap: 4px;
-}
-
-.stTabs [data-baseweb="tab"] {
-    color: #8b949e;
-    font-weight: 600;
-}
-
-.stTabs [data-baseweb="tab"][aria-selected="true"] {
-    color: #58a6ff !important;
-    border-bottom: 2px solid #58a6ff;
-    background: transparent;
-}
-
-/* Selectbox / multiselect */
-[data-baseweb="select"] {
-    background: #161b22;
-}
-
-/* Divider */
-hr {
-    border-color: #30363d;
-}
-
-/* Badge de destaque */
-.badge {
-    display: inline-block;
-    background: #1f3a5f;
-    color: #58a6ff;
-    border: 1px solid #388bfd44;
-    border-radius: 20px;
-    padding: 2px 10px;
-    font-size: 0.78rem;
-    font-family: 'Space Mono', monospace;
-    font-weight: 700;
-    margin: 2px;
-}
-
-.badge-red {
-    background: #3d1c1c;
-    color: #f85149;
-    border-color: #f8514944;
-}
-
-.badge-yellow {
-    background: #3d2e0a;
-    color: #d29922;
-    border-color: #d2992244;
-}
-
-.badge-green {
-    background: #1a3028;
-    color: #3fb950;
-    border-color: #3fb95044;
-}
-
-.section-header {
-    font-family: 'Space Mono', monospace;
-    font-size: 0.7rem;
-    letter-spacing: 0.15em;
-    color: #8b949e;
-    text-transform: uppercase;
-    margin-bottom: 0.5rem;
-    border-bottom: 1px solid #30363d;
-    padding-bottom: 4px;
-}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-
-# ─────────────────────────────────────────────
-# Funções de extração
-# ─────────────────────────────────────────────
-def inferir_data_do_nome(nome: str) -> str:
-    match = re.search(r"(\d{2})[_\-](\d{2})[_\-](\d{4})", nome)
-    if match:
-        dia, mes, ano = match.groups()
-        return f"{dia}/{mes}/{ano}"
-    return ""
-
-
-
-def normalizar_minutos(val):
-    if val is None:
-        return None
-
-    if isinstance(val, datetime.time):
-        return val.hour * 60 + val.minute
-
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        return None
-
-
-
-def obter_nome_aeroporto(ws) -> str:
-    for row in ws.iter_rows(min_row=1, max_row=6, values_only=True):
-        for cell in row:
-            if cell and isinstance(cell, str) and "Aeroporto" in cell:
-                return cell.strip()
-    return ""
-
-
-
-def encontrar_linha_ocorrencias(ws):
-    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=60, values_only=True), start=1):
-        if row[0] and isinstance(row[0], str) and "OCORRÊNCIAS" in row[0]:
-            return i
-    return None
-
-
-
-def extrair_de_bytes(file_bytes: bytes, nome_arquivo: str) -> pd.DataFrame:
-    """Extrai dados de um arquivo XLSX em memória."""
-    from openpyxl import load_workbook
-
-    data_str = inferir_data_do_nome(nome_arquivo)
-    registros = []
-
-    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
-    abas_aeroporto = [s for s in wb.sheetnames if s.startswith("SB")]
-
-    for icao in abas_aeroporto:
-        ws = wb[icao]
-        nome_aeroporto = obter_nome_aeroporto(ws)
-        linha_header = encontrar_linha_ocorrencias(ws)
-
-        if not linha_header:
-            continue
-
-        data_inicio = linha_header + 2
-
-        for row in ws.iter_rows(
-            min_row=data_inicio,
-            max_row=data_inicio + 120,
-            values_only=True,
-        ):
-            tipo = row[1]
-            if not tipo or not isinstance(tipo, str):
-                continue
-
-            registros.append(
-                {
-                    "data": data_str,
-                    "icao": icao,
-                    "aeroporto": nome_aeroporto,
-                    "item": row[0],
-                    "tipo_ocorrencia": tipo.strip(),
-                    "movimento": row[2],
-                    "motivo_1": row[3],
-                    "minutos_motivo_1": normalizar_minutos(row[4]),
-                    "motivo_2": row[5],
-                    "minutos_motivo_2": normalizar_minutos(row[6]),
-                    "motivo_3": row[7],
-                    "minutos_motivo_3": normalizar_minutos(row[8]),
-                    "companhia": row[9],
-                    "numero_voo": str(row[10]) if row[10] else None,
-                    "equipamento": row[11],
-                    "origem_destino": row[12],
-                    "af_aeroporto": row[13] if len(row) > 13 else None,
-                }
-            )
-
-    wb.close()
-    return pd.DataFrame(registros) if registros else pd.DataFrame()
-
-
-# ─────────────────────────────────────────────
-# Gerenciamento da base CSV em session_state
-# ─────────────────────────────────────────────
 BASE_CSV = "base_atrasos.csv"
-
 COLUNAS = [
     "data",
     "icao",
@@ -308,8 +47,250 @@ COLUNAS = [
     "af_aeroporto",
 ]
 
+PLOT_THEME = dict(
+    paper_bgcolor="#0d1117",
+    plot_bgcolor="#0d1117",
+    font_color="#e6edf3",
+    font_family="DM Sans",
+    colorway=["#58a6ff", "#3fb950", "#d29922", "#f85149", "#bc8cff", "#39d353"],
+)
+
+CSS_CUSTOM = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+.stApp { background-color: #0d1117; color: #e6edf3; }
+section[data-testid="stSidebar"] {
+    background-color: #161b22;
+    border-right: 1px solid #30363d;
+}
+/* Títulos */
+h1, h2, h3 { font-family: 'Space Mono', monospace !important; }
+/* Métricas */
+[data-testid="metric-container"] {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 16px 20px;
+}
+[data-testid="metric-container"] label {
+    color: #8b949e !important;
+    font-size: 0.75rem;
+}
+[data-testid="metric-container"] [data-testid="stMetricValue"] {
+    color: #58a6ff !important;
+    font-family: 'Space Mono', monospace !important;
+    font-size: 1.8rem !important;
+}
+[data-testid="stMetricDelta"] { font-size: 0.75rem; }
+/* Botões */
+.stButton > button {
+    background: #238636;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 600;
+    padding: 0.5rem 1.2rem;
+    transition: background 0.2s;
+}
+.stButton > button:hover { background: #2ea043; }
+/* Upload */
+[data-testid="stFileUploader"] {
+    background: #161b22;
+    border: 1px dashed #388bfd;
+    border-radius: 8px;
+    padding: 1rem;
+}
+/* Dataframe */
+[data-testid="stDataFrame"] {
+    border: 1px solid #30363d;
+    border-radius: 8px;
+}
+/* Abas */
+.stTabs [data-baseweb="tab-list"] {
+    background: #161b22;
+    border-radius: 8px;
+    gap: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+    color: #8b949e;
+    font-weight: 600;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    color: #58a6ff !important;
+    border-bottom: 2px solid #58a6ff;
+    background: transparent;
+}
+/* Selectbox / multiselect */
+[data-baseweb="select"] { background: #161b22; }
+/* Divider */
+hr { border-color: #30363d; }
+/* Badge de destaque */
+.badge {
+    display: inline-block;
+    background: #1f3a5f;
+    color: #58a6ff;
+    border: 1px solid #388bfd44;
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: 0.78rem;
+    font-family: 'Space Mono', monospace;
+    font-weight: 700;
+    margin: 2px;
+}
+.badge-red {
+    background: #3d1c1c;
+    color: #f85149;
+    border-color: #f8514944;
+}
+.badge-yellow {
+    background: #3d2e0a;
+    color: #d29922;
+    border-color: #d2992244;
+}
+.badge-green {
+    background: #1a3028;
+    color: #3fb950;
+    border-color: #3fb95044;
+}
+.section-header {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    color: #8b949e;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+    border-bottom: 1px solid #30363d;
+    padding-bottom: 4px;
+}
+</style>
+"""
+
+
+def configurar_pagina() -> None:
+    st.set_page_config(
+        page_title="Atrasos Aeroportuários",
+        page_icon="✈️",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    st.markdown(CSS_CUSTOM, unsafe_allow_html=True)
+
+
+def extrair_data_do_workbook(wb) -> str:
+    """
+    Lê a data de ocorrência diretamente da planilha.
+    Localização: aba OPERACIONES_PUNTUALIDAD_INCIDEN, linha 5, coluna A.
+    Fallback: retorna string vazia para posterior inferência pelo nome do arquivo.
+    """
+    try:
+        ws = wb["OPERACIONES_PUNTUALIDAD_INCIDEN"]
+        for row in ws.iter_rows(min_row=5, max_row=5, max_col=1, values_only=True):
+            val = row[0]
+            if isinstance(val, (datetime.date, datetime.datetime)):
+                return val.strftime("%d/%m/%Y")
+    except Exception:
+        pass
+    return ""
+
+
+def inferir_data_do_nome(nome: str) -> str:
+    """Extrai data do nome do arquivo: DD.MM.YYYY, DD_MM_YYYY ou DD-MM-YYYY."""
+    match = re.search(r"(\d{2})[._\-](\d{2})[._\-](\d{4})", nome)
+    if match:
+        dia, mes, ano = match.groups()
+        return f"{dia}/{mes}/{ano}"
+    return ""
+
+
+def normalizar_minutos(val):
+    if val is None:
+        return None
+
+    if isinstance(val, datetime.time):
+        return val.hour * 60 + val.minute
+
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def obter_nome_aeroporto(ws) -> str:
+    for row in ws.iter_rows(min_row=1, max_row=6, values_only=True):
+        for cell in row:
+            if cell and isinstance(cell, str) and "Aeroporto" in cell:
+                return cell.strip()
+    return ""
+
+
+def encontrar_linha_ocorrencias(ws):
+    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=60, values_only=True), start=1):
+        if row[0] and isinstance(row[0], str) and "OCORRÊNCIAS" in row[0]:
+            return i
+    return None
+
+
+def extrair_de_bytes(file_bytes: bytes, nome_arquivo: str) -> pd.DataFrame:
+    """Extrai dados de um arquivo XLSX em memória."""
+    from openpyxl import load_workbook
+
+    registros = []
+    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+
+    try:
+        data_str = extrair_data_do_workbook(wb) or inferir_data_do_nome(nome_arquivo)
+        abas_aeroporto = [sheet for sheet in wb.sheetnames if sheet.startswith("SB")]
+
+        for icao in abas_aeroporto:
+            ws = wb[icao]
+            nome_aeroporto = obter_nome_aeroporto(ws)
+            linha_header = encontrar_linha_ocorrencias(ws)
+
+            if not linha_header:
+                continue
+
+            data_inicio = linha_header + 2
+
+            for row in ws.iter_rows(
+                min_row=data_inicio,
+                max_row=data_inicio + 120,
+                values_only=True,
+            ):
+                tipo = row[1]
+                if not tipo or not isinstance(tipo, str):
+                    continue
+
+                registros.append(
+                    {
+                        "data": data_str,
+                        "icao": icao,
+                        "aeroporto": nome_aeroporto,
+                        "item": row[0],
+                        "tipo_ocorrencia": tipo.strip(),
+                        "movimento": row[2],
+                        "motivo_1": row[3],
+                        "minutos_motivo_1": normalizar_minutos(row[4]),
+                        "motivo_2": row[5],
+                        "minutos_motivo_2": normalizar_minutos(row[6]),
+                        "motivo_3": row[7],
+                        "minutos_motivo_3": normalizar_minutos(row[8]),
+                        "companhia": row[9],
+                        "numero_voo": str(row[10]) if row[10] else None,
+                        "equipamento": row[11],
+                        "origem_destino": row[12],
+                        "af_aeroporto": row[13] if len(row) > 13 else None,
+                    }
+                )
+    finally:
+        wb.close()
+
+    return pd.DataFrame(registros) if registros else pd.DataFrame()
+
 
 @st.cache_data
+
 def carregar_base_csv(caminho: str) -> pd.DataFrame:
     if os.path.exists(caminho):
         df = pd.read_csv(caminho, dtype=str, encoding="utf-8-sig")
@@ -321,202 +302,165 @@ def carregar_base_csv(caminho: str) -> pd.DataFrame:
     return pd.DataFrame(columns=COLUNAS)
 
 
-
-def salvar_base_csv(df: pd.DataFrame, caminho: str):
+def salvar_base_csv(df: pd.DataFrame, caminho: str) -> None:
     df.to_csv(caminho, index=False, encoding="utf-8-sig")
 
 
+def inicializar_estado() -> None:
+    if "df_base" not in st.session_state:
+        st.session_state.df_base = carregar_base_csv(BASE_CSV)
 
-def cor_tipo(tipo: str) -> str:
-    mapa = {
-        "ATRASO": "badge",
-        "CANCELADO": "badge badge-red",
-        "RETORNO": "badge badge-yellow",
-        "ALTERNADO": "badge badge-yellow",
-    }
-    return mapa.get(tipo.upper() if tipo else "", "badge")
-
-
-# ─────────────────────────────────────────────
-# Inicializa session_state
-# ─────────────────────────────────────────────
-if "df_base" not in st.session_state:
-    st.session_state.df_base = carregar_base_csv(BASE_CSV)
-
-if "datas_processadas" not in st.session_state:
-    st.session_state.datas_processadas = (
-        set(st.session_state.df_base["data"].unique())
-        if not st.session_state.df_base.empty
-        else set()
-    )
+    if "datas_processadas" not in st.session_state:
+        if not st.session_state.df_base.empty:
+            st.session_state.datas_processadas = set(st.session_state.df_base["data"].dropna().unique())
+        else:
+            st.session_state.datas_processadas = set()
 
 
-# ─────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## Atrasos Aeroportuários")
-    st.markdown(
-        '<div class="section-header">Importar Arquivos</div>',
-        unsafe_allow_html=True,
-    )
+def render_sidebar() -> None:
+    with st.sidebar:
+        st.markdown("## Atrasos Aeroportuários")
+        st.markdown('<div class="section-header">Importar Arquivos</div>', unsafe_allow_html=True)
 
-    uploaded_files = st.file_uploader(
-        "Arquivos RD_DD_MM_AAAA.xlsx",
-        type=["xlsx"],
-        accept_multiple_files=True,
-        help="Envie um ou mais arquivos diários. Datas já existentes na base serão ignoradas.",
-    )
+        uploaded_files = st.file_uploader(
+            "Arquivos RD_DD_MM_AAAA.xlsx",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            help="Envie um ou mais arquivos diários. Datas já existentes na base serão ignoradas.",
+        )
 
-    if uploaded_files:
-        if st.button("Processar e Adicionar à Base", use_container_width=True):
-            novos_dfs = []
-            log = []
+        if uploaded_files and st.button("Processar e Adicionar à Base", use_container_width=True):
+            processar_uploads(uploaded_files)
 
-            for f in uploaded_files:
-                data_arq = inferir_data_do_nome(f.name)
+        st.divider()
+        render_filtros_sidebar()
+        st.divider()
+        render_exportacao_sidebar()
 
-                if data_arq in st.session_state.datas_processadas:
-                    log.append(f"**{f.name}** — já na base ({data_arq})")
-                    continue
 
-                with st.spinner(f"Extraindo {f.name}..."):
-                    df_novo = extrair_de_bytes(f.read(), f.name)
+def processar_uploads(uploaded_files) -> None:
+    novos_dfs = []
+    log = []
 
-                if df_novo.empty:
-                    log.append(f"**{f.name}** — nenhuma ocorrência encontrada")
-                else:
-                    novos_dfs.append(df_novo)
-                    st.session_state.datas_processadas.add(data_arq)
-                    log.append(f"**{f.name}** — {len(df_novo)} ocorrências ({data_arq})")
+    for arquivo in uploaded_files:
+        data_arq = inferir_data_do_nome(arquivo.name)
 
-            if novos_dfs:
-                df_combined = pd.concat([st.session_state.df_base] + novos_dfs, ignore_index=True)
-                st.session_state.df_base = df_combined
-                salvar_base_csv(df_combined, BASE_CSV)
-                st.cache_data.clear()
+        if data_arq in st.session_state.datas_processadas:
+            log.append(f"**{arquivo.name}** — já na base ({data_arq})")
+            continue
 
-            for msg in log:
-                st.markdown(msg)
+        with st.spinner(f"Extraindo {arquivo.name}..."):
+            df_novo = extrair_de_bytes(arquivo.read(), arquivo.name)
 
-            st.divider()
+        if df_novo.empty:
+            log.append(f"**{arquivo.name}** — nenhuma ocorrência encontrada")
+            continue
 
-    # ── Filtros ──────────────────────────────
+        novos_dfs.append(df_novo)
+        if data_arq:
+            st.session_state.datas_processadas.add(data_arq)
+        log.append(f"**{arquivo.name}** — {len(df_novo)} ocorrências ({data_arq or 'data não identificada'})")
+
+    if novos_dfs:
+        df_combined = pd.concat([st.session_state.df_base] + novos_dfs, ignore_index=True)
+        st.session_state.df_base = df_combined
+        salvar_base_csv(df_combined, BASE_CSV)
+        st.cache_data.clear()
+
+    for msg in log:
+        st.markdown(msg)
+
+
+def render_filtros_sidebar() -> None:
     st.markdown('<div class="section-header">Filtros</div>', unsafe_allow_html=True)
+
+    df_all = st.session_state.df_base.copy()
+    if df_all.empty:
+        st.info("Nenhum dado na base ainda.")
+        return
+
+    df_all["_ano"] = df_all["data"].astype(str).str[-4:]
+    anos_disp = sorted(df_all["_ano"].dropna().unique().tolist(), reverse=True)
+    anos_sel = st.multiselect("Ano", anos_disp, default=anos_disp, key="f_ano")
+
+    df_all_filtrado = df_all[df_all["_ano"].isin(anos_sel)] if anos_sel else df_all
+
+    datas_disp = sorted(df_all_filtrado["data"].dropna().unique().tolist())
+    st.multiselect("Data", datas_disp, default=datas_disp, key="f_data")
+
+    icaos_disp = sorted(df_all["icao"].dropna().unique().tolist())
+    st.multiselect("Aeroporto (ICAO)", icaos_disp, default=icaos_disp, key="f_icao")
+
+    tipos_disp = sorted(df_all["tipo_ocorrencia"].dropna().unique().tolist())
+    st.multiselect("Tipo de Ocorrência", tipos_disp, default=tipos_disp, key="f_tipo")
+
+    movs_disp = sorted(df_all["movimento"].dropna().unique().tolist())
+    st.multiselect("Movimento", movs_disp, default=movs_disp, key="f_mov")
+
+    cias_disp = sorted(df_all["companhia"].dropna().unique().tolist())
+    st.multiselect("Companhia", cias_disp, default=cias_disp, key="f_cia")
+
+
+def render_exportacao_sidebar() -> None:
+    st.markdown('<div class="section-header">Exportar</div>', unsafe_allow_html=True)
 
     df_all = st.session_state.df_base
     if df_all.empty:
-        st.info("Nenhum dado na base ainda.")
-    else:
-        datas_disp = sorted(df_all["data"].dropna().unique().tolist())
-        st.multiselect("Data", datas_disp, default=datas_disp, key="f_data")
+        return
 
-        icaos_disp = sorted(df_all["icao"].dropna().unique().tolist())
-        st.multiselect("Aeroporto (ICAO)", icaos_disp, default=icaos_disp, key="f_icao")
-
-        tipos_disp = sorted(df_all["tipo_ocorrencia"].dropna().unique().tolist())
-        st.multiselect(
-            "Tipo de Ocorrência",
-            tipos_disp,
-            default=tipos_disp,
-            key="f_tipo",
-        )
-
-        movs_disp = sorted(df_all["movimento"].dropna().unique().tolist())
-        st.multiselect("Movimento", movs_disp, default=movs_disp, key="f_mov")
-
-        cias_disp = sorted(df_all["companhia"].dropna().unique().tolist())
-        st.multiselect("Companhia", cias_disp, default=cias_disp, key="f_cia")
-
-    st.divider()
-
-    # ── Download da base ────────────────────
-    st.markdown('<div class="section-header">Exportar</div>', unsafe_allow_html=True)
-    if not df_all.empty:
-        csv_bytes = df_all.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-        st.download_button(
-            "Baixar CSV Completo",
-            data=csv_bytes,
-            file_name="base_atrasos_completa.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+    csv_bytes = df_all.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        "Baixar CSV Completo",
+        data=csv_bytes,
+        file_name="base_atrasos_completa.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
 
-# ─────────────────────────────────────────────
-# CONTEÚDO PRINCIPAL
-# ─────────────────────────────────────────────
-st.markdown("# Base de Dados — Atrasos Aeroportuários")
+def aplicar_filtros(df_all: pd.DataFrame) -> pd.DataFrame:
+    df = df_all.copy()
+    df["_ano"] = df["data"].astype(str).str[-4:]
 
-df_all = st.session_state.df_base
-if df_all.empty:
-    st.info("Nenhum dado carregado. Use o painel lateral para importar arquivos RD_*.xlsx.")
-    st.stop()
+    if st.session_state.get("f_ano"):
+        df = df[df["_ano"].isin(st.session_state["f_ano"])]
 
+    if st.session_state.get("f_data"):
+        df = df[df["data"].isin(st.session_state["f_data"])]
 
-# ── Aplica filtros ──────────────────────────
-df = df_all.copy()
+    if st.session_state.get("f_icao"):
+        df = df[df["icao"].isin(st.session_state["f_icao"])]
 
-if "f_data" in st.session_state and st.session_state.f_data:
-    df = df[df["data"].isin(st.session_state.f_data)]
+    if st.session_state.get("f_tipo"):
+        df = df[df["tipo_ocorrencia"].isin(st.session_state["f_tipo"])]
 
-if "f_icao" in st.session_state and st.session_state.f_icao:
-    df = df[df["icao"].isin(st.session_state.f_icao)]
+    if st.session_state.get("f_mov"):
+        df = df[df["movimento"].isin(st.session_state["f_mov"])]
 
-if "f_tipo" in st.session_state and st.session_state.f_tipo:
-    df = df[df["tipo_ocorrencia"].isin(st.session_state.f_tipo)]
+    if st.session_state.get("f_cia"):
+        df = df[df["companhia"].isin(st.session_state["f_cia"])]
 
-if "f_mov" in st.session_state and st.session_state.f_mov:
-    df = df[df["movimento"].isin(st.session_state.f_mov)]
-
-if "f_cia" in st.session_state and st.session_state.f_cia:
-    df = df[df["companhia"].isin(st.session_state.f_cia)]
+    return df
 
 
-# ── KPIs ────────────────────────────────────
-total = len(df)
-n_aeroportos = df["icao"].nunique()
-n_datas = df["data"].nunique()
-min_medio = df["minutos_motivo_1"].mean()
-n_cancelados = len(df[df["tipo_ocorrencia"].str.upper() == "CANCELADO"])
+def render_kpis(df: pd.DataFrame) -> None:
+    total = len(df)
+    n_aeroportos = df["icao"].nunique()
+    n_datas = df["data"].nunique()
+    min_medio = df["minutos_motivo_1"].mean()
+    n_cancelados = len(df[df["tipo_ocorrencia"].astype(str).str.upper() == "CANCELADO"])
 
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total de Ocorrências", f"{total:,}".replace(",", "."))
-col2.metric("Aeroportos com Dados", n_aeroportos)
-col3.metric("Datas na Base", n_datas)
-col4.metric("Atraso Médio (min)", f"{min_medio:.0f}" if not pd.isna(min_medio) else "—")
-col5.metric("Cancelamentos", n_cancelados)
-
-st.divider()
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total de Ocorrências", f"{total:,}".replace(",", "."))
+    col2.metric("Aeroportos com Dados", n_aeroportos)
+    col3.metric("Datas na Base", n_datas)
+    col4.metric("Atraso Médio (min)", f"{min_medio:.0f}" if not pd.isna(min_medio) else "—")
+    col5.metric("Cancelamentos", n_cancelados)
 
 
-# ── Abas ────────────────────────────────────
-tab_vis, tab_aero, tab_cia, tab_motivos, tab_dados = st.tabs(
-    [
-        "Visão Geral",
-        "Por Aeroporto",
-        "Por Companhia",
-        "Motivos",
-        "Dados Brutos",
-    ]
-)
-
-PLOT_THEME = dict(
-    paper_bgcolor="#0d1117",
-    plot_bgcolor="#0d1117",
-    font_color="#e6edf3",
-    font_family="DM Sans",
-    colorway=["#58a6ff", "#3fb950", "#d29922", "#f85149", "#bc8cff", "#39d353"],
-)
-
-
-# ─────────────────────────────────────────────
-# ABA 1 — VISÃO GERAL
-# ─────────────────────────────────────────────
-with tab_vis:
+def render_aba_visao_geral(df: pd.DataFrame, n_datas: int) -> None:
     col_l, col_r = st.columns(2)
 
-    # Ocorrências por tipo
     with col_l:
         st.markdown("#### Ocorrências por Tipo")
         df_tipo = df["tipo_ocorrencia"].value_counts().reset_index()
@@ -533,7 +477,6 @@ with tab_vis:
         fig.update_traces(marker_line_width=0)
         st.plotly_chart(fig, use_container_width=True)
 
-    # Ocorrências por movimento
     with col_r:
         st.markdown("#### Distribuição por Movimento")
         df_mov = df["movimento"].value_counts().reset_index()
@@ -550,11 +493,9 @@ with tab_vis:
         fig2.update_traces(textfont_color="#e6edf3")
         st.plotly_chart(fig2, use_container_width=True)
 
-    # Evolução diária (se houver múltiplas datas)
     if n_datas > 1:
         st.markdown("#### Evolução Diária de Ocorrências")
         df_dia = df.groupby("data").size().reset_index(name="Ocorrências")
-
         fig3 = px.line(
             df_dia,
             x="data",
@@ -566,10 +507,8 @@ with tab_vis:
         fig3.update_traces(line_width=2.5, marker_size=8)
         st.plotly_chart(fig3, use_container_width=True)
 
-    # Distribuição de atrasos em minutos
     st.markdown("#### Distribuição dos Atrasos (minutos)")
     df_min = df["minutos_motivo_1"].dropna()
-
     if not df_min.empty:
         fig4 = px.histogram(
             df_min,
@@ -582,10 +521,7 @@ with tab_vis:
         st.plotly_chart(fig4, use_container_width=True)
 
 
-# ─────────────────────────────────────────────
-# ABA 2 — POR AEROPORTO
-# ─────────────────────────────────────────────
-with tab_aero:
+def render_aba_aeroporto(df: pd.DataFrame) -> None:
     st.markdown("#### Ocorrências por Aeroporto")
     df_aero = df.groupby(["icao", "tipo_ocorrencia"]).size().reset_index(name="Quantidade")
 
@@ -606,7 +542,6 @@ with tab_aero:
     fig_aero.update_layout(**PLOT_THEME, margin=dict(t=20, b=20))
     st.plotly_chart(fig_aero, use_container_width=True)
 
-    # Atraso médio por aeroporto
     st.markdown("#### Atraso Médio por Aeroporto (min — Motivo 1)")
     df_med = (
         df.groupby("icao")["minutos_motivo_1"]
@@ -629,10 +564,7 @@ with tab_aero:
     st.plotly_chart(fig_med, use_container_width=True)
 
 
-# ─────────────────────────────────────────────
-# ABA 3 — POR COMPANHIA
-# ─────────────────────────────────────────────
-with tab_cia:
+def render_aba_companhia(df: pd.DataFrame) -> None:
     col_l, col_r = st.columns(2)
 
     with col_l:
@@ -686,11 +618,8 @@ with tab_cia:
         st.plotly_chart(fig_cia_med, use_container_width=True)
 
 
-# ─────────────────────────────────────────────
-# ABA 4 — MOTIVOS
-# ─────────────────────────────────────────────
-with tab_motivos:
-    st.markdown("#### Motivos de Atraso — Frequência")
+def render_aba_motivos(df: pd.DataFrame) -> None:
+    st.markdown("#### Motivos de Atraso — Frequência (Motivo 1)")
     todos_motivos = pd.concat(
         [
             df["motivo_1"].dropna(),
@@ -698,6 +627,7 @@ with tab_motivos:
             df["motivo_3"].dropna(),
         ]
     )
+
     df_motivos = todos_motivos.value_counts().head(20).reset_index()
     df_motivos.columns = ["Código", "Frequência"]
 
@@ -717,7 +647,6 @@ with tab_motivos:
     )
     st.plotly_chart(fig_mot, use_container_width=True)
 
-    # Atraso médio por motivo
     st.markdown("#### Atraso Médio por Código de Motivo (min)")
     df_mot_med = (
         df.groupby("motivo_1")["minutos_motivo_1"]
@@ -746,19 +675,12 @@ with tab_motivos:
     st.plotly_chart(fig_mot2, use_container_width=True)
 
 
-# ─────────────────────────────────────────────
-# ABA 5 — DADOS BRUTOS
-# ─────────────────────────────────────────────
-with tab_dados:
+def render_aba_dados(df: pd.DataFrame) -> None:
     st.markdown(f"**{len(df):,} registros** após filtros aplicados".replace(",", "."))
 
-    # Pesquisa rápida
-    busca = st.text_input(
-        "Buscar em qualquer campo",
-        placeholder="ex: AZU, BSB, RA - 93 ...",
-    )
-
+    busca = st.text_input("Buscar em qualquer campo", placeholder="ex: AZU, BSB, RA - 93 ...")
     df_show = df.copy()
+
     if busca:
         mask = df_show.apply(
             lambda col: col.astype(str).str.contains(busca, case=False, na=False)
@@ -791,7 +713,6 @@ with tab_dados:
         },
     )
 
-    # Download filtrado
     csv_filtrado = df_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
     st.download_button(
         "Baixar seleção como CSV",
@@ -801,14 +722,56 @@ with tab_dados:
     )
 
 
-# ─────────────────────────────────────────────
-# Footer
-# ─────────────────────────────────────────────
-st.divider()
-st.markdown(
-    "<div style='text-align:center; color:#8b949e; font-size:0.75rem; font-family:Space Mono, monospace;'>"
-    "Base de Dados de Atrasos Aeroportuários · ABR / ANAC · "
-    + datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-    + "</div>",
-    unsafe_allow_html=True,
-)
+def render_conteudo_principal() -> None:
+    st.markdown("# Base de Dados — Atrasos Aeroportuários")
+
+    df_all = st.session_state.df_base
+    if df_all.empty:
+        st.info("Nenhum dado carregado. Use o painel lateral para importar arquivos RD_*.xlsx.")
+        st.stop()
+
+    df = aplicar_filtros(df_all)
+    render_kpis(df)
+    st.divider()
+
+    tab_vis, tab_aero, tab_cia, tab_motivos, tab_dados = st.tabs(
+        ["Visão Geral", "Por Aeroporto", "Por Companhia", "Motivos", "Dados Brutos"]
+    )
+
+    with tab_vis:
+        render_aba_visao_geral(df, df["data"].nunique())
+
+    with tab_aero:
+        render_aba_aeroporto(df)
+
+    with tab_cia:
+        render_aba_companhia(df)
+
+    with tab_motivos:
+        render_aba_motivos(df)
+
+    with tab_dados:
+        render_aba_dados(df)
+
+
+def render_footer() -> None:
+    st.divider()
+    st.markdown(
+        "<div style='text-align:center; color:#8b949e; font-size:0.75rem; font-family:Space Mono, monospace;'>"
+        "Base de Dados de Atrasos Aeroportuários · ABR / ANAC · "
+        + datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def main() -> None:
+    configurar_pagina()
+    inicializar_estado()
+    render_sidebar()
+    render_conteudo_principal()
+    render_footer()
+
+
+if __name__ == "__main__":
+    main()
